@@ -33,11 +33,8 @@ COPY . ./
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint
 
 RUN composer dump-autoload --no-dev --optimize \
-    && php artisan storage:link \
-    && chown -R www-data:www-data storage bootstrap/cache \
     && sed -i 's/\r$//' /usr/local/bin/docker-entrypoint \
     && chmod +x /usr/local/bin/docker-entrypoint
-
 EXPOSE 10000
 
 ENTRYPOINT ["docker-entrypoint"]
