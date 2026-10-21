@@ -9,7 +9,8 @@ use App\Http\Controllers\Api\V1\FavoriteController;
 use App\Http\Controllers\Api\V1\OrderController;
 use App\Http\Controllers\Api\V1\ProductController;
 use App\Http\Controllers\Api\V1\ReviewController;
-
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Route;
 Route::prefix('v1')->name('api.v1.')->group(function () {
     Route::get('/health', function () {
         return response()->json([
@@ -57,3 +58,17 @@ Route::prefix('v1')->name('api.v1.')->group(function () {
         Route::post('/admin/products/{product}/reject', [ProductController::class, 'reject'])->whereNumber('product')->name('admin.products.reject');
     });
 });
+        Route::get('/test-db', function () {
+            try {
+                DB::connection()->getPdo();
+                return response()->json([
+                    'status' => 'success',
+                    'message' => '¡Conexión exitosa a Supabase desde Render!'
+                ]);
+            } catch (\Exception $e) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'No se pudo conectar: ' . $e->getMessage()
+                ], 500);
+            }
+        });
