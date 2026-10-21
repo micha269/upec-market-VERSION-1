@@ -32,7 +32,7 @@ RUN composer install \
 COPY . ./
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint
 
-RUN composer dump-autoload --no-dev --optimize \
+RUN composer dump-autoload --no-dev --optimize --no-scripts\
     && sed -i 's/\r$//' /usr/local/bin/docker-entrypoint \
     && chmod +x /usr/local/bin/docker-entrypoint
 EXPOSE 10000
