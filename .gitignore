@@ -1,0 +1,15 @@
+# Environment files and secrets
+.env
+.env.*
+!.env.example
+
+# Dependencies and generated assets
+/backend/vendor/
+/backend/node_modules/
+/upec-market/node_modules/
+/upec-market/dist/
+
+# Local database and runtime files
+/backend/database/*.sqlite
+/backend/storage/*.key
+/backend/storage/logs/
