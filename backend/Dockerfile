@@ -20,7 +20,7 @@ COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
 WORKDIR /var/www/html
 
-COPY backend/composer.json backend/composer.lock ./
+COPY composer.json composer.lock ./
 RUN composer install \
     --no-dev \
     --no-interaction \
@@ -29,15 +29,12 @@ RUN composer install \
     --no-scripts \
     --no-autoloader
 
-COPY backend/ ./
-COPY backend/docker-entrypoint.sh /usr/local/bin/docker-entrypoint
+COPY . ./
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint
 
-RUN composer dump-autoload --no-dev --optimize \
-    && php artisan storage:link \
-    && chown -R www-data:www-data storage bootstrap/cache \
+RUN composer dump-autoload --no-dev --optimize --no-scripts\
     && sed -i 's/\r$//' /usr/local/bin/docker-entrypoint \
     && chmod +x /usr/local/bin/docker-entrypoint
-
 EXPOSE 10000
 
 ENTRYPOINT ["docker-entrypoint"]
