@@ -39,6 +39,35 @@ UPDATE users SET role = 'admin' WHERE email = 'admin@upec.edu.ec';
 
 No se permite que un usuario se otorgue ese rol desde React. Después del cambio, la cuenta debe cerrar sesión y volver a ingresar para cargar el rol actualizado. El enlace **Moderación** aparece a toda persona autenticada; solo el rol `admin` puede consultar o aprobar productos, y el backend conserva esta restricción.
 
+### Despliegue en Render con Docker
+
+Render ejecuta Laravel mediante el contenedor [`backend/Dockerfile`](backend/Dockerfile). El frontend React/Vite se publica por separado como un **Static Site** de Render; no necesita PHP ni Docker.
+
+1. Crea un **Web Service** conectado al repositorio y selecciona **Docker**. Usa `backend/Dockerfile` como Dockerfile y la raíz del repositorio (`.`) como contexto de Docker.
+2. Configura en el Web Service estas variables de entorno desde el panel de Render; no las guardes en el repositorio:
+
+   ```dotenv
+   APP_ENV=production
+   APP_DEBUG=false
+   APP_KEY=<clave generada para Laravel>
+   APP_URL=https://<nombre-api>.onrender.com
+   DB_CONNECTION=pgsql
+   DB_HOST=<host-postgresql>
+   DB_PORT=5432
+   DB_DATABASE=<base>
+   DB_USERNAME=<usuario>
+   DB_PASSWORD=<contraseña>
+   DB_SSLMODE=require
+   FRONTEND_URLS=https://<nombre-frontend>.onrender.com
+   ```
+
+   Genera `APP_KEY` localmente ejecutando `php artisan key:generate --show` desde `backend` y guarda el resultado solo en las variables del servicio. Configura también `STRIPE_SECRET` y `STRIPE_WEBHOOK_SECRET` si habilitarás pagos.
+3. Configura en Render la ruta del health check como `/up`. El contenedor escucha el puerto `PORT` que Render asigna y aplica `php artisan migrate --force` al iniciar (se puede desactivar con `RUN_MIGRATIONS=false`). La migración del proyecto es aditiva; no usa `migrate:fresh` ni elimina tablas.
+4. Crea un **Static Site** para el frontend con directorio raíz `upec-market`, comando de compilación `npm ci && npm run build` y directorio de publicación `dist`. Define durante la compilación `VITE_API_BASE_URL=https://<nombre-api>.onrender.com/api/v1`.
+5. Sustituye `FRONTEND_URLS` por el dominio real del Static Site. Si Render asigna otro nombre de dominio al servicio, actualiza ambas variables para que el cliente apunte a la API y la API acepte el origen del navegador.
+
+La instancia del contenedor tiene almacenamiento efímero. Si se conservarán imágenes subidas después de reinicios o despliegues, agrega un disco persistente al servicio y móntalo en `/var/www/html/storage/app/public`; sin ese disco, las imágenes almacenadas localmente pueden perderse.
+
 ### 2. Stripe Checkout
 
 Agrega estas variables a `backend/.env` usando las claves de tu cuenta de Stripe (para pruebas, claves y webhook de prueba):
