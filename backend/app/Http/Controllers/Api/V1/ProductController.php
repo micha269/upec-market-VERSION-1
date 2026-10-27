@@ -73,10 +73,11 @@ class ProductController extends Controller
         ]);
 
         $imagePath = null;
+        $imageDisk = config('filesystems.product_images_disk', 'public');
         try {
-            $imagePath = $request->file('image')?->store('products', 'public');
+            $imagePath = $request->file('image')?->store('products', $imageDisk);
             if ($request->hasFile('image') && ! $imagePath) {
-                return response()->json(['message' => 'No se pudo guardar la imagen. Revisa el almacenamiento público del servidor.'], 503);
+                return response()->json(['message' => 'No se pudo guardar la imagen. Revisa la configuración del almacenamiento de imágenes.'], 503);
             }
 
             $product = DB::transaction(fn () => Product::create([
@@ -87,7 +88,7 @@ class ProductController extends Controller
             ]))->load(['category:id,name', 'seller:id,name']);
         } catch (Throwable $exception) {
             if ($imagePath) {
-                Storage::disk('public')->delete($imagePath);
+                Storage::disk($imageDisk)->delete($imagePath);
             }
             throw $exception;
         }
@@ -111,7 +112,11 @@ class ProductController extends Controller
         abort_unless(auth()->user()->role === 'admin', 403);
         abort_unless($product->status === 'Pendiente', 409, 'Solo se pueden aprobar productos pendientes.');
 
-        $product->update(['status' => 'Aprobado']);
+        $product->update([
+            'status' => 'Aprobado',
+            'moderation_reason' => null,
+            'moderated_at' => now(),
+        ]);
 
         return response()->json($this->present($product->load(['category:id,name', 'seller:id,name'])));
     }
@@ -120,22 +125,74 @@ class ProductController extends Controller
     {
         abort_unless(auth()->user()->role === 'admin', 403);
 
-        return response()->json(Product::with(['category:id,name', 'seller:id,name'])
+        return response()->json($this->moderationProducts()
             ->where('status', 'Pendiente')
-            ->latest()
             ->get()
+            ->map(fn (Product $product) => $this->present($product)));
+    }
+
+    public function moderationIndex(): JsonResponse
+    {
+        abort_unless(auth()->user()->role === 'admin', 403);
+
+        return response()->json($this->moderationProducts()->get()
             ->map(fn (Product $product) => $this->present($product)));
     }
 
     public function reject(Request $request, Product $product): JsonResponse
     {
         abort_unless(auth()->user()->role === 'admin', 403);
-        $data = $request->validate(['reason' => ['nullable', 'string', 'max:1000']]);
+        if (is_string($request->input('reason'))) {
+            $request->merge(['reason' => trim($request->input('reason'))]);
+        }
+        $data = $request->validate(['reason' => ['required', 'string', 'min:3', 'max:1000']]);
         abort_unless($product->status === 'Pendiente', 409, 'Solo se pueden rechazar productos pendientes.');
 
-        $product->update(['status' => 'Rechazado']);
+        $product->update([
+            'status' => 'Rechazado',
+            'moderation_reason' => trim($data['reason']),
+            'moderated_at' => now(),
+        ]);
 
-        return response()->json(['message' => 'Producto rechazado.', 'reason' => $data['reason'] ?? null]);
+        return response()->json($this->present($product->load(['category:id,name', 'seller:id,name'])));
+    }
+
+    public function remove(Request $request, Product $product): JsonResponse
+    {
+        abort_unless($request->user()->role === 'admin', 403);
+
+        if (is_string($request->input('reason'))) {
+            $request->merge(['reason' => trim($request->input('reason'))]);
+        }
+        $data = $request->validate(['reason' => ['required', 'string', 'min:3', 'max:1000']]);
+        abort_if($product->status === 'Eliminado', 409, 'El producto ya fue eliminado.');
+        abort_if($product->sold_at, 409, 'No se puede eliminar un producto vendido.');
+
+        DB::transaction(function () use ($product, $data) {
+            $lockedProduct = Product::query()->lockForUpdate()->findOrFail($product->id);
+            abort_if($lockedProduct->status === 'Eliminado', 409, 'El producto ya fue eliminado.');
+            abort_if($lockedProduct->sold_at, 409, 'No se puede eliminar un producto vendido.');
+
+            $lockedProduct->update([
+                'status' => 'Eliminado',
+                'moderation_reason' => trim($data['reason']),
+                'moderated_at' => now(),
+            ]);
+
+            DB::table('carts')->where('product_id', $lockedProduct->id)->delete();
+            DB::table('favorites')->where('product_id', $lockedProduct->id)->delete();
+        });
+
+        return response()->json($this->present($product->fresh()->load(['category:id,name', 'seller:id,name'])));
+    }
+
+    private function moderationProducts()
+    {
+        return Product::query()
+            ->with(['category:id,name', 'seller:id,name'])
+            ->withAvg('reviews', 'rating')
+            ->withCount('reviews')
+            ->latest();
     }
 
     private function present(Product $product): array
@@ -151,11 +208,9 @@ class ProductController extends Controller
             'seller' => $product->seller?->name,
             'type' => $product->type,
             'status' => $product->status,
-            'image' => $product->image
-                ? (str_starts_with($product->image, 'http://') || str_starts_with($product->image, 'https://')
-                    ? $product->image
-                    : Storage::disk('public')->url($product->image))
-                : null,
+            'moderation_reason' => $product->moderation_reason,
+            'moderated_at' => $product->moderated_at?->toIso8601String(),
+            'image' => $product->imageUrl(),
             'sold' => (bool) $product->sold_at,
             'rating' => $product->reviews_avg_rating ? round((float) $product->reviews_avg_rating, 1) : 0,
             'review_count' => $product->reviews_count ?? 0,

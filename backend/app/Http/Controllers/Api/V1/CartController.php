@@ -18,7 +18,7 @@ class CartController extends Controller
                 'id' => $product->id,
                 'title' => $product->title,
                 'price' => (float) $product->price,
-                'image' => $product->image,
+                'image' => $product->imageUrl(),
                 'seller' => $product->seller?->name,
                 'status' => $product->status,
                 'type' => $product->type,

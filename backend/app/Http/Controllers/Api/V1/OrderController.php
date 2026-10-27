@@ -27,20 +27,31 @@ class OrderController extends Controller
 
     public function store(Request $request, Product $product): JsonResponse
     {
-        if (! config('services.stripe.secret')) {
-            return response()->json(['message' => 'Stripe no está configurado. Define STRIPE_SECRET en backend/.env antes de habilitar pagos.'], 503);
+        $paymentMode = config('services.payments.mode', 'simulated');
+        if (! in_array($paymentMode, ['simulated', 'stripe'], true)) {
+            return response()->json(['message' => 'El modo de pago configurado no es válido.'], 503);
+        }
+        if ($paymentMode === 'stripe' && ! config('services.stripe.secret')) {
+            return response()->json(['message' => 'Stripe está seleccionado, pero falta configurar STRIPE_SECRET.'], 503);
         }
 
-        $order = DB::transaction(function () use ($request, $product) {
+        $order = DB::transaction(function () use ($request, $product, $paymentMode) {
             $lockedProduct = Product::query()->lockForUpdate()->findOrFail($product->id);
             abort_unless($lockedProduct->status === 'Aprobado' && ! $lockedProduct->sold_at, 409, 'Este producto no está disponible.');
             abort_if($lockedProduct->seller_id === $request->user()->id, 422, 'No puedes comprar tu propio producto.');
             abort_if($lockedProduct->type !== 'En venta', 422, 'Los productos de intercambio no admiten pago online.');
-            abort_if(
-                MarketplaceOrder::where('product_id', $lockedProduct->id)->where('status', 'Pendiente')->exists(),
-                409,
-                'Este producto ya tiene un pago pendiente.'
-            );
+            $pendingOrder = MarketplaceOrder::where('product_id', $lockedProduct->id)
+                ->where('status', 'Pendiente')
+                ->first();
+            if ($pendingOrder) {
+                abort_unless(
+                    $paymentMode === 'simulated' && $pendingOrder->buyer_id === $request->user()->id,
+                    409,
+                    'Este producto ya tiene un pago pendiente.'
+                );
+
+                return $pendingOrder;
+            }
 
             $price = (float) $lockedProduct->price;
             $commission = round($price * 0.03, 2);
@@ -55,6 +66,14 @@ class OrderController extends Controller
             ]);
         });
 
+        if ($paymentMode === 'simulated') {
+            return response()->json([
+                'order_id' => $order->id,
+                'checkout_mode' => 'simulated',
+                'message' => 'Compra de demostración: no se realizará ningún cobro.',
+            ], 201);
+        }
+
         Stripe::setApiKey(config('services.stripe.secret'));
 
         try {
@@ -64,7 +83,7 @@ class OrderController extends Controller
                     'quantity' => 1,
                     'price_data' => [
                         'currency' => config('services.stripe.currency', 'usd'),
-                        'unit_amount' => $totalCents,
+                        'unit_amount' => (int) round((float) $order->total * 100),
                         'product_data' => ['name' => $product->title],
                     ],
                 ]],
@@ -72,8 +91,8 @@ class OrderController extends Controller
                     'order_id' => (string) $order->id,
                     'product_id' => (string) $product->id,
                 ],
-                        'success_url' => rtrim(config('services.frontend_url'), '/').'/?checkout=success&order='.$order->id.'&session_id={CHECKOUT_SESSION_ID}',
-                        'cancel_url' => rtrim(config('services.frontend_url'), '/').'/?checkout=cancelled&order='.$order->id,
+                'success_url' => rtrim(config('services.frontend_url'), '/').'/?checkout=success&order='.$order->id.'&session_id={CHECKOUT_SESSION_ID}',
+                'cancel_url' => rtrim(config('services.frontend_url'), '/').'/?checkout=cancelled&order='.$order->id,
             ]);
         } catch (ApiErrorException $exception) {
             report($exception);
@@ -90,6 +109,33 @@ class OrderController extends Controller
         ], 201);
     }
 
+    public function simulatePayment(Request $request, MarketplaceOrder $order): JsonResponse
+    {
+        abort_unless(config('services.payments.mode', 'simulated') === 'simulated', 404);
+        abort_unless($order->buyer_id === $request->user()->id, 403);
+
+        DB::transaction(function () use ($order) {
+            $lockedOrder = MarketplaceOrder::query()->lockForUpdate()->findOrFail($order->id);
+            if ($lockedOrder->status === 'Completado') {
+                return;
+            }
+
+            abort_unless($lockedOrder->status === 'Pendiente', 409, 'Esta orden ya no está pendiente de pago.');
+
+            $product = Product::query()->lockForUpdate()->findOrFail($lockedOrder->product_id);
+            abort_unless($product->status === 'Aprobado' && ! $product->sold_at, 409, 'Este producto ya no está disponible.');
+
+            $product->update(['sold_at' => now()]);
+            $lockedOrder->update(['status' => 'Completado']);
+            DB::table('carts')->where('product_id', $product->id)->delete();
+        });
+
+        return response()->json([
+            ...$this->present($order->fresh()->load(['product.category:id,name', 'product.seller:id,name'])),
+            'checkout_mode' => 'simulated',
+        ]);
+    }
+
     public function show(Request $request, MarketplaceOrder $order): JsonResponse
     {
         abort_unless($order->buyer_id === $request->user()->id || $request->user()->role === 'admin', 403);
@@ -100,6 +146,7 @@ class OrderController extends Controller
     public function confirm(Request $request, MarketplaceOrder $order): JsonResponse
     {
         abort_unless($order->buyer_id === $request->user()->id, 403);
+        abort_unless(config('services.payments.mode', 'simulated') === 'stripe' && config('services.stripe.secret'), 404);
         $data = $request->validate(['session_id' => ['required', 'string', 'max:255']]);
         abort_unless($order->stripe_session_id && hash_equals($order->stripe_session_id, $data['session_id']), 422, 'La sesión de pago no corresponde a esta orden.');
 
@@ -197,7 +244,7 @@ class OrderController extends Controller
             'id' => $order->id,
             'product_id' => $order->product_id,
             'product' => $order->product?->title,
-            'image' => $order->product?->image,
+            'image' => $order->product?->imageUrl(),
             'category' => $order->product?->category?->name,
             'seller' => $order->product?->seller?->name,
             'total' => (float) $order->total,

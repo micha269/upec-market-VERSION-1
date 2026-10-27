@@ -87,7 +87,7 @@ class ConversationController extends Controller
             'id' => $conversation->id,
             'product_id' => $conversation->product_id,
             'title' => $conversation->product?->title,
-            'image' => $conversation->product?->image,
+            'image' => $conversation->product?->imageUrl(),
             'other_user' => $conversation->buyer_id === $userId
                 ? $conversation->seller?->name
                 : $conversation->buyer?->name,

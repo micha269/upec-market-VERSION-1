@@ -20,6 +20,10 @@ return [
 
     'frontend_url' => env('FRONTEND_APP_URL', 'http://localhost:5173'),
 
+    'payments' => [
+        'mode' => env('PAYMENTS_MODE', 'simulated'),
+    ],
+
     'stripe' => [
         'secret' => env('STRIPE_SECRET'),
         'webhook_secret' => env('STRIPE_WEBHOOK_SECRET'),

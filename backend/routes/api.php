@@ -62,6 +62,7 @@ Route::prefix('v1')->name('api.v1.')->group(function () {
         Route::get('/orders', [OrderController::class, 'index'])->name('orders.index');
         Route::post('/products/{product}/checkout', [OrderController::class, 'store'])->whereNumber('product')->name('orders.store');
         Route::get('/orders/{order}', [OrderController::class, 'show'])->name('orders.show');
+        Route::post('/orders/{order}/simulate-payment', [OrderController::class, 'simulatePayment'])->whereNumber('order')->name('orders.simulate-payment');
         Route::post('/orders/{order}/confirm', [OrderController::class, 'confirm'])->name('orders.confirm');
 
         Route::post('/products/{product}/reviews', [ReviewController::class, 'store'])->whereNumber('product')->name('products.reviews.store');
@@ -70,7 +71,9 @@ Route::prefix('v1')->name('api.v1.')->group(function () {
         Route::get('/conversations/{conversation}/messages', [ConversationController::class, 'messages'])->name('conversations.messages');
         Route::post('/conversations/{conversation}/messages', [ConversationController::class, 'send'])->name('conversations.send');
         Route::get('/admin/products/pending', [ProductController::class, 'pending'])->name('admin.products.pending');
+        Route::get('/admin/products', [ProductController::class, 'moderationIndex'])->name('admin.products.index');
         Route::post('/admin/products/{product}/approve', [ProductController::class, 'approve'])->whereNumber('product')->name('admin.products.approve');
         Route::post('/admin/products/{product}/reject', [ProductController::class, 'reject'])->whereNumber('product')->name('admin.products.reject');
+        Route::delete('/admin/products/{product}', [ProductController::class, 'remove'])->whereNumber('product')->name('admin.products.remove');
     });
 });

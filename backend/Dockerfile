@@ -9,8 +9,11 @@ RUN apt-get update \
         libonig-dev \
         libpq-dev \
         libzip-dev \
+        libcurl4-openssl-dev \
         unzip \
     && docker-php-ext-install -j"$(nproc)" intl mbstring pdo_pgsql zip \
+        curl \
+    && printf 'upload_max_filesize=8M\npost_max_size=10M\n' > /usr/local/etc/php/conf.d/uploads.ini \
     && a2enmod headers rewrite \
     && sed -ri "s!/var/www/html!${APACHE_DOCUMENT_ROOT}!g" /etc/apache2/sites-available/*.conf \
     && printf '\n<Directory /var/www/html/public>\n    AllowOverride All\n    Require all granted\n</Directory>\n' >> /etc/apache2/apache2.conf \

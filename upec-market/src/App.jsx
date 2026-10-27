@@ -7,6 +7,18 @@ import {
   Home, FileText, HelpCircle, ChevronRight, MapPin, Trash2, Send, X, Star
 } from 'lucide-react';
 
+async function loadAllProducts() {
+  const firstPage = await apiRequest('/products?per_page=100');
+  const products = [...firstPage.data];
+
+  for (let page = 2; page <= firstPage.meta.last_page; page += 1) {
+    const response = await apiRequest(`/products?per_page=100&page=${page}`);
+    products.push(...response.data);
+  }
+
+  return products;
+}
+
 const categories = [
   { name: 'Libros y apuntes', icon: <BookOpen size={24} /> },
   { name: 'Tecnología', icon: <Laptop size={24} /> },
@@ -69,14 +81,17 @@ export default function UPECMarket() {
   const [notification, setNotification] = useState(null);
   const [apiLoading, setApiLoading] = useState(true);
   const [isPublishing, setIsPublishing] = useState(false);
+  const [isCheckingOut, setIsCheckingOut] = useState(false);
+  const [moderationAction, setModerationAction] = useState(null);
+  const [isModerating, setIsModerating] = useState(false);
   const chatEndRef = useRef(null);
 
   const refreshProducts = useCallback(async () => {
-    const [productResponse, categoriesResponse] = await Promise.all([
-      apiRequest('/products?per_page=100'),
+    const [allProducts, categoriesResponse] = await Promise.all([
+      loadAllProducts(),
       apiRequest('/categories'),
     ]);
-    setProducts(productResponse.data);
+    setProducts(allProducts);
     setCategoryList(categoriesResponse);
 
     if (getApiToken()) {
@@ -92,7 +107,7 @@ export default function UPECMarket() {
       setOrders(ordersResponse);
 
       if (currentUser?.role === 'admin') {
-        setAdminProducts(await apiRequest('/admin/products/pending'));
+        setAdminProducts(await apiRequest('/admin/products'));
       }
     }
   }, [currentUser?.role]);
@@ -106,12 +121,12 @@ export default function UPECMarket() {
     let active = true;
     const initialize = async () => {
       try {
-        const [productResponse, categoriesResponse] = await Promise.all([
-          apiRequest('/products?per_page=100'),
+        const [allProducts, categoriesResponse] = await Promise.all([
+          loadAllProducts(),
           apiRequest('/categories'),
         ]);
         if (!active) return;
-        setProducts(productResponse.data);
+        setProducts(allProducts);
         setCategoryList(categoriesResponse);
 
         if (getApiToken()) {
@@ -294,12 +309,31 @@ export default function UPECMarket() {
   };
 
   const rejectProduct = async (id) => {
+    setModerationAction({ id, action: 'reject' });
+  };
+
+  const removeProduct = (id) => {
+    setModerationAction({ id, action: 'remove' });
+  };
+
+  const handleModeration = async (e) => {
+    e.preventDefault();
+    if (!moderationAction) return;
+    const reason = new FormData(e.currentTarget).get('reason');
+    const { id, action } = moderationAction;
+    setIsModerating(true);
     try {
-      await apiRequest(`/admin/products/${id}/reject`, { method: 'POST', body: {} });
+      await apiRequest(
+        action === 'remove' ? `/admin/products/${id}` : `/admin/products/${id}/reject`,
+        { method: action === 'remove' ? 'DELETE' : 'POST', body: { reason } },
+      );
       await refreshProducts();
-      showNotification('success', 'Producto rechazado.');
+      setModerationAction(null);
+      showNotification('success', action === 'remove' ? 'Producto retirado del marketplace.' : 'Producto rechazado.');
     } catch (error) {
       showNotification('error', error.message);
+    } finally {
+      setIsModerating(false);
     }
   };
 
@@ -318,12 +352,24 @@ export default function UPECMarket() {
   };
 
   const confirmPayment = async () => {
+    setIsCheckingOut(true);
     try {
       const response = await apiRequest(`/products/${showPaymentModal.product.id}/checkout`, { method: 'POST' });
-      setShowPaymentModal(null);
-      window.location.assign(response.checkout_url);
+      if (response.checkout_mode === 'simulated') {
+        const order = await apiRequest(`/orders/${response.order_id}/simulate-payment`, { method: 'POST' });
+        setShowPaymentModal(null);
+        setShowReviewModal({ id: order.product_id, title: order.product });
+        showNotification('success', 'Compra de demostración completada; no se realizó ningún cobro.');
+        refreshProducts().catch(error => showNotification('error', `Compra completada, pero no se pudo actualizar la página: ${error.message}`));
+      } else if (response.checkout_url) {
+        window.location.assign(response.checkout_url);
+      } else {
+        throw new Error('La API no devolvió un enlace de pago válido.');
+      }
     } catch (error) {
       showNotification('error', error.message);
+    } finally {
+      setIsCheckingOut(false);
     }
   };
 
@@ -712,14 +758,19 @@ export default function UPECMarket() {
                     <p className="text-sm text-gray-500">{item.seller}</p>
                   </div>
                   <p className="font-bold text-lg">${item.price.toFixed(2)}</p>
+                  {item.type === 'En venta' && (
+                    <button onClick={() => handlePayment(item)} className="bg-upec-green text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-600 transition">
+                      Comprar
+                    </button>
+                  )}
                   <button onClick={() => removeFromCart(item.id)} className="text-red-500 hover:text-red-700">
                     <Trash2 size={20} />
                   </button>
                 </div>
               ))}
               <div className="mt-6 pt-6 border-t border-gray-200 flex justify-between items-center">
-                <span className="text-lg font-bold">Total: ${cart.reduce((sum, item) => sum + item.price, 0).toFixed(2)}</span>
-                <button onClick={() => handlePayment(cart[0])} className="bg-upec-green text-white px-6 py-3 rounded-lg font-bold hover:bg-green-600 transition">Proceder al pago</button>
+                <span className="text-lg font-bold">Total en carrito: ${cart.reduce((sum, item) => sum + item.price, 0).toFixed(2)}</span>
+                <span className="text-sm text-gray-500">Compra cada producto con su botón; los intercambios no admiten pago online.</span>
               </div>
             </div>
           )}
@@ -730,11 +781,10 @@ export default function UPECMarket() {
       {currentPage === 'mis-publicaciones' && (
         <section className="container mx-auto px-4 py-8">
           <h3 className="text-2xl font-bold mb-6">Mis publicaciones</h3>
-          {userRole !== 'vendedor' ? (
+          {!isLoggedIn ? (
             <div className="text-center py-20 bg-white rounded-xl shadow-sm">
               <FileText size={48} className="mx-auto text-gray-300 mb-4" />
-              <p className="text-gray-500 text-lg">Cambia a Modo Vendedor para ver tus publicaciones.</p>
-              <button onClick={switchRole} className="mt-4 bg-upec-green text-white px-6 py-2 rounded-lg hover:bg-green-600 transition">Cambiar a Vendedor</button>
+              <p className="text-gray-500 text-lg">Inicia sesión para consultar tus publicaciones y su estado.</p>
             </div>
           ) : (
             <ProductGrid 
@@ -745,8 +795,8 @@ export default function UPECMarket() {
               addToCart={addToCart}
               approveProduct={approveProduct}
               rejectProduct={rejectProduct}
+              removeProduct={removeProduct}
               setShowProductDetail={openProductDetail}
-              showAdminControls={userRole === 'admin'}
               getAverageRating={getAverageRating}
               reviews={reviews}
             />
@@ -801,13 +851,29 @@ export default function UPECMarket() {
             <>
               <h3 className="text-2xl font-bold mb-6">Productos pendientes de revisión</h3>
               <ProductGrid
-                products={adminProducts}
+                products={adminProducts.filter(product => product.status === 'Pendiente')}
                 favorites={favorites}
                 toggleFavorite={toggleFavorite}
                 handlePayment={handlePayment}
                 addToCart={addToCart}
                 approveProduct={approveProduct}
                 rejectProduct={rejectProduct}
+                removeProduct={removeProduct}
+                setShowProductDetail={openProductDetail}
+                showAdminControls
+                getAverageRating={getAverageRating}
+                reviews={reviews}
+              />
+              <h3 className="text-2xl font-bold my-6">Productos revisados</h3>
+              <ProductGrid
+                products={adminProducts.filter(product => product.status !== 'Pendiente')}
+                favorites={favorites}
+                toggleFavorite={toggleFavorite}
+                handlePayment={handlePayment}
+                addToCart={addToCart}
+                approveProduct={approveProduct}
+                rejectProduct={rejectProduct}
+                removeProduct={removeProduct}
                 setShowProductDetail={openProductDetail}
                 showAdminControls
                 getAverageRating={getAverageRating}
@@ -864,20 +930,28 @@ export default function UPECMarket() {
                 </div>
               </div>
               <p className="text-sm text-gray-500 mb-4">{showProductDetail.category} • Vendedor: {showProductDetail.seller}</p>
+              {showProductDetail.status !== 'Aprobado' && (
+                <div className={`rounded-lg p-3 mb-4 text-sm ${showProductDetail.status === 'Eliminado' || showProductDetail.status === 'Rechazado' ? 'bg-red-50 text-red-800' : 'bg-yellow-50 text-yellow-800'}`}>
+                  <strong>Estado: {showProductDetail.status}</strong>
+                  {showProductDetail.moderation_reason && <p className="mt-1">Motivo: {showProductDetail.moderation_reason}</p>}
+                </div>
+              )}
               <p className="text-gray-700 mb-4">{showProductDetail.description}</p>
               <p className="text-3xl font-bold text-upec-dark mb-4">${showProductDetail.price.toFixed(2)}</p>
 
-              <div className="flex gap-3 mb-6">
-                <button onClick={() => { addToCart(showProductDetail); setShowProductDetail(null); }} className="flex-1 bg-upec-green text-white py-3 rounded-lg font-bold hover:bg-green-600 transition">Agregar al carrito</button>
-                <button onClick={() => { handlePayment(showProductDetail); setShowProductDetail(null); }} className="flex-1 bg-upec-dark text-white py-3 rounded-lg font-bold hover:bg-gray-800 transition">Comprar ahora</button>
-                <button 
-                  onClick={() => { startConversation(showProductDetail); setShowProductDetail(null); }}
-                  className="bg-blue-500 text-white px-4 py-3 rounded-lg font-bold hover:bg-blue-600 transition flex items-center gap-2"
-                  title="Contactar vendedor"
-                >
-                  <MessageSquare size={20} /> Chat
-                </button>
-              </div>
+              {showProductDetail.status === 'Aprobado' && !showProductDetail.sold && (
+                <div className="flex gap-3 mb-6">
+                  <button onClick={() => { addToCart(showProductDetail); setShowProductDetail(null); }} className="flex-1 bg-upec-green text-white py-3 rounded-lg font-bold hover:bg-green-600 transition">Agregar al carrito</button>
+                  <button onClick={() => { handlePayment(showProductDetail); setShowProductDetail(null); }} className="flex-1 bg-upec-dark text-white py-3 rounded-lg font-bold hover:bg-gray-800 transition">Comprar ahora</button>
+                  <button
+                    onClick={() => { startConversation(showProductDetail); setShowProductDetail(null); }}
+                    className="bg-blue-500 text-white px-4 py-3 rounded-lg font-bold hover:bg-blue-600 transition flex items-center gap-2"
+                    title="Contactar vendedor"
+                  >
+                    <MessageSquare size={20} /> Chat
+                  </button>
+                </div>
+              )}
 
               {/* SECCIÓN RESEÑAS */}
               <div className="border-t border-gray-200 pt-6">
@@ -1042,11 +1116,41 @@ export default function UPECMarket() {
         </div>
       )}
 
+      {moderationAction && (
+        <div className="fixed inset-0 bg-black/50 z-[90] flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6">
+            <h3 className="text-xl font-bold mb-2">
+              {moderationAction.action === 'remove' ? 'Retirar producto' : 'Rechazar producto'}
+            </h3>
+            <p className="text-sm text-gray-600 mb-4">
+              El motivo quedará guardado para que el vendedor pueda consultarlo en sus publicaciones.
+            </p>
+            <form onSubmit={handleModeration} className="space-y-4">
+              <textarea
+                name="reason"
+                required
+                minLength={3}
+                maxLength={1000}
+                rows="4"
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-upec-green"
+                placeholder="Escribe el motivo (mínimo 3 caracteres)"
+              />
+              <div className="flex justify-end gap-2">
+                <button type="button" disabled={isModerating} onClick={() => setModerationAction(null)} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg disabled:opacity-50">Cancelar</button>
+                <button type="submit" disabled={isModerating} className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50">
+                  {isModerating ? 'Guardando...' : 'Confirmar'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* MODAL PAGO */}
       {showPaymentModal && (
         <div className="fixed inset-0 bg-black/50 z-[80] flex items-center justify-center p-4">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6">
-            <h3 className="text-xl font-bold mb-4 flex items-center gap-2"><CreditCard className="text-upec-green" /> Pago seguro con Stripe</h3>
+            <h3 className="text-xl font-bold mb-4 flex items-center gap-2"><CreditCard className="text-upec-green" /> Confirmar compra</h3>
             <div className="bg-gray-50 p-4 rounded-lg mb-4 border border-gray-200">
               <p className="text-sm font-medium text-gray-500 mb-1">Producto:</p>
               <p className="font-bold">{showPaymentModal.product.title}</p>
@@ -1065,11 +1169,11 @@ export default function UPECMarket() {
                 </div>
               </div>
             </div>
-            <p className="text-xs text-gray-500 mb-4">El pago se confirma mediante Stripe. La liquidación al vendedor se administra desde la cuenta de la plataforma; no se transfiere automáticamente a Stripe Connect.</p>
+            <p className="text-xs text-gray-500 mb-4">En modo demostración la compra se completa sin cobrar dinero. Si Stripe está habilitado, continuarás al checkout seguro; el pago real se confirma con Stripe.</p>
             <div className="flex justify-end gap-2">
-              <button onClick={() => setShowPaymentModal(null)} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition">Cancelar</button>
-              <button onClick={confirmPayment} className="px-4 py-2 bg-upec-green text-white rounded-lg hover:bg-green-600 transition font-medium flex items-center gap-2">
-                <CreditCard size={18} /> Continuar a Stripe
+              <button disabled={isCheckingOut} onClick={() => setShowPaymentModal(null)} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition disabled:opacity-50">Cancelar</button>
+              <button disabled={isCheckingOut} onClick={confirmPayment} className="px-4 py-2 bg-upec-green text-white rounded-lg hover:bg-green-600 transition font-medium flex items-center gap-2 disabled:opacity-50">
+                <CreditCard size={18} /> {isCheckingOut ? 'Procesando...' : 'Continuar compra'}
               </button>
             </div>
           </div>
@@ -1100,7 +1204,7 @@ function StarRatingInput() {
 }
 
 // --- SUBCOMPONENTE: GRID DE PRODUCTOS ---
-function ProductGrid({ products, favorites, toggleFavorite, handlePayment, addToCart, approveProduct, rejectProduct, setShowProductDetail, showAdminControls = false, getAverageRating, reviews }) {
+function ProductGrid({ products, favorites, toggleFavorite, handlePayment, addToCart, approveProduct, rejectProduct, removeProduct, setShowProductDetail, showAdminControls = false, getAverageRating, reviews }) {
   if (products.length === 0) {
     return (
       <div className="container mx-auto px-4 pb-20 text-center py-10 bg-white rounded-xl shadow-sm">
@@ -1121,17 +1225,20 @@ function ProductGrid({ products, favorites, toggleFavorite, handlePayment, addTo
               <div className="relative h-48 bg-gray-200 cursor-pointer" onClick={() => setShowProductDetail(prod)}>
                 <img src={prod.image || 'https://images.unsplash.com/photo-1560343090-f0409e92791a?auto=format&fit=crop&q=80&w=400'} alt={prod.title} className="w-full h-full object-cover" />
                 <span className={`absolute top-2 left-2 text-xs font-bold px-2 py-1 rounded text-white ${prod.type === 'En venta' ? 'bg-upec-green' : 'bg-blue-500'}`}>{prod.type}</span>
-                {prod.status === 'Pendiente' && (
-                  <span className="absolute top-2 right-2 bg-yellow-500 text-white text-xs px-2 py-1 rounded font-bold">En revisión</span>
-                )}
-                {prod.status === 'Aprobado' && (
-                  <span className="absolute top-2 right-2 bg-blue-600 text-white text-xs px-2 py-1 rounded font-bold flex items-center gap-1"><ShieldCheck size={12} /> Verificado</span>
-                )}
+                {prod.status === 'Pendiente' && <span className="absolute top-2 right-2 bg-yellow-500 text-white text-xs px-2 py-1 rounded font-bold">En revisión</span>}
+                {prod.status === 'Aprobado' && <span className="absolute top-2 right-2 bg-blue-600 text-white text-xs px-2 py-1 rounded font-bold flex items-center gap-1"><ShieldCheck size={12} /> Verificado</span>}
+                {prod.status === 'Rechazado' && <span className="absolute top-2 right-2 bg-red-600 text-white text-xs px-2 py-1 rounded font-bold">Rechazado</span>}
+                {prod.status === 'Eliminado' && <span className="absolute top-2 right-2 bg-gray-700 text-white text-xs px-2 py-1 rounded font-bold">Retirado</span>}
               </div>
               <div className="p-4 flex-1 flex flex-col justify-between">
                 <div>
                   <h4 className="font-bold text-sm mb-1 line-clamp-2 cursor-pointer hover:text-upec-green" onClick={() => setShowProductDetail(prod)}>{prod.title}</h4>
                   <p className="text-xs text-gray-500 mb-2">{prod.category}</p>
+                  {prod.moderation_reason && (
+                    <p className="text-xs text-red-700 bg-red-50 rounded p-2 mb-2">
+                      Motivo: {prod.moderation_reason}
+                    </p>
+                  )}
                   
                   {reviewCount > 0 && (
                     <div className="flex items-center gap-1 mb-2">
@@ -1149,7 +1256,7 @@ function ProductGrid({ products, favorites, toggleFavorite, handlePayment, addTo
                     <Heart size={18} className={favorites.includes(prod.id) ? 'fill-red-500 text-red-500' : 'text-gray-400 hover:text-red-500'} />
                   </button>
                 </div>
-                {prod.status === 'Aprobado' && (
+                {prod.status === 'Aprobado' && !prod.sold && (
                   <div className="flex gap-2 mt-3">
                     <button onClick={() => addToCart(prod)} className="flex-1 bg-gray-100 text-gray-700 text-xs py-2 rounded-lg hover:bg-gray-200 transition">
                       + Carrito
@@ -1162,12 +1269,21 @@ function ProductGrid({ products, favorites, toggleFavorite, handlePayment, addTo
                 {showAdminControls && prod.status === 'Pendiente' && (
                   <div className="mt-2 flex gap-2">
                     <button onClick={() => approveProduct(prod.id)} className="flex-1 bg-blue-500 text-white text-xs py-2 rounded hover:bg-blue-600 transition">
-                      Aprobar
+                      Guardar y publicar
                     </button>
                     <button onClick={() => rejectProduct(prod.id)} className="flex-1 bg-red-500 text-white text-xs py-2 rounded hover:bg-red-600 transition">
                       Rechazar
                     </button>
                   </div>
+                )}
+                {showAdminControls && prod.status !== 'Pendiente' && prod.status !== 'Eliminado' && (
+                  <button
+                    onClick={() => removeProduct(prod.id)}
+                    disabled={prod.sold}
+                    className="mt-2 w-full bg-red-50 text-red-700 text-xs py-2 rounded hover:bg-red-100 transition disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {prod.sold ? 'No se puede retirar: producto vendido' : 'Retirar del marketplace'}
+                  </button>
                 )}
               </div>
             </div>
